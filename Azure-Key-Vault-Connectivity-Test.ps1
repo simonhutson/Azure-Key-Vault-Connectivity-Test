@@ -4,9 +4,9 @@ param (
     [String]$KeyVaultName = ""
 )
 
-# Clear Variables
 cls
-Write-Host
+
+# Clear Variables
 $TestKeyVaultConnection = $null
 $KeyVaultKeysResponse = $null
 $KeyVaultKeysAuthURI = $null
@@ -22,7 +22,7 @@ $AADServicePrincipalAppSecret = $AppSecret
 $AzureKeyVaultName = $KeyVaultName
 
 # Get Proxy details
-Write-Host -BackgroundColor Yellow -ForegroundColor DarkBlue "1. Get-ItemProperty: HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings\ProxyServer"
+Write-Host -BackgroundColor Yellow -ForegroundColor DarkBlue "Get-ItemProperty: HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings\ProxyServer"
 Write-Host
 $proxies = (Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings').ProxyServer
 
@@ -47,63 +47,66 @@ if ($proxies)
     if (!$proxyport) { $proxyport = '80' } 
 
     # Test network connection to Proxy
-    Write-Host -BackgroundColor Yellow -ForegroundColor DarkBlue "2. Test-NetConnection: $($proxyhost):$($proxyport)"
+    Write-Host -BackgroundColor Yellow -ForegroundColor DarkBlue "Test-NetConnection: $($proxyhost):$($proxyport)"
     Write-Host
-
-    Test-NetConnection -ComputerName $proxyhost -port $proxyport
-}
-
-# Test network connection to Key Vault
-Write-Host -BackgroundColor Yellow -ForegroundColor DarkBlue "3. Test-NetConnection: $AzureKeyVaultName.vault.azure.net (TCP Port 443)"
-Write-Host
-$TestKeyVaultConnection = Test-NetConnection -ComputerName "$AzureKeyVaultName.vault.azure.net" -Port 443
-
-If (-Not $TestKeyVaultConnection.TcpTestSucceeded)
-{
-    Write-Host -BackgroundColor Red -ForegroundColor White "Failed"
-    Write-Host
-    Break
-}
-
-# Call Key Vault Keys Endpoint Unauthenticated
-Write-Host -BackgroundColor Yellow -ForegroundColor DarkBlue "4. Invoke-RestMethod: https://$AzureKeyVaultName.vault.azure.net/keys?api-version=7.0 (Unauthenticated)"
-Write-Host
-$KeyVaultKeysResponse = try 
-{ 
-    Invoke-RestMethod -Method GET -Uri "https://$AzureKeyVaultName.vault.azure.net/keys?api-version=7.0" -Headers @{}
-}
-Catch
-{
-    $_.Exception.Response
-}
-
-If ($null -eq $KeyVaultKeysResponse)
-{
-    Write-Host -BackgroundColor Red -ForegroundColor White "Failed"
-    Write-Host
-    Break
-}
-Else
-{
-    If ($KeyVaultKeysResponse.StatusCode.value__ -ne 401)
+    Try
     {
-        Write-Host -BackgroundColor Red -ForegroundColor White "Failed"
-        Write-Host
-        Write-Host -BackgroundColor Red -ForegroundColor White "Status Code: $($KeyVaultKeysResponse.StatusCode.value__)"
-        Write-Host -BackgroundColor Red -ForegroundColor White "Status Description: $($KeyVaultKeysResponse.StatusDescription)"
+        Test-NetConnection -ComputerName $proxyhost -port $proxyport
+    }
+    Catch
+    {
+        Write-Host -BackgroundColor Red -ForegroundColor White "$($_.Exception)"
         Write-Host
         Break
     }
 }
 
+# Test network connection to Key Vault
+Write-Host -BackgroundColor Yellow -ForegroundColor DarkBlue "Test-NetConnection: $AzureKeyVaultName.vault.azure.net (TCP Port 443)"
+Write-Host
+Try
+{
+    #$TestKeyVaultConnection = Test-NetConnection -ComputerName "$AzureKeyVaultName.vault.azure.net" -Port 443 -InformationLevel Quiet
+    If (-Not $(Test-NetConnection -ComputerName "$AzureKeyVaultName.vault.azure.net" -Port 443 -InformationLevel Quiet))
+    {
+        Write-Host -BackgroundColor Red -ForegroundColor White "TCP connection to $AzureKeyVaultName.vault.azure.net failed"
+        Write-Host
+        Break
+    }
+}
+Catch
+{
+    Write-Host -BackgroundColor Red -ForegroundColor White "$($_.Exception)"
+    Write-Host
+    Break
+}
+
+# Call Key Vault Keys Endpoint Unauthenticated
+Write-Host -BackgroundColor Yellow -ForegroundColor DarkBlue "Invoke-RestMethod: https://$AzureKeyVaultName.vault.azure.net/keys?api-version=7.0 (Unauthenticated)"
+Write-Host
+$KeyVaultKeysException = try 
+{ 
+    Invoke-RestMethod -Method GET -Uri "https://$AzureKeyVaultName.vault.azure.net/keys?api-version=7.0" -Headers @{}
+}
+Catch
+{
+    If ($_.Exception.Response.StatusCode.value__ -ne 401)
+    {
+        Write-Host -BackgroundColor Red -ForegroundColor White "$_.Exception"
+        Write-Host
+        Break
+    }
+    $_.Exception
+}
+
 # Call Key Vault Keys Authentication Endpoint With Service Principal ID & Secret
-$KeyVaultKeysAuthURI = [regex]::match($KeyVaultKeysResponse.Headers['www-authenticate'], 'authorization="(.*?)"').Groups[1].Value
+$KeyVaultKeysAuthURI = [regex]::match($KeyVaultKeysException.Response.Headers['www-authenticate'], 'authorization="(.*?)"').Groups[1].Value
 $KeyVaultKeysAuthURI += "/oauth2/token"
 $KeyVaultKeysAuthBody = 'grant_type=client_credentials'
 $KeyVaultKeysAuthBody += '&client_id=' + $AADServicePrincipalAppID
 $KeyVaultKeysAuthBody += '&client_secret=' + [Uri]::EscapeDataString($AADServicePrincipalAppSecret)
 $KeyVaultKeysAuthBody += '&resource=' + [Uri]::EscapeDataString("https://vault.azure.net")
-Write-Host -BackgroundColor Yellow -ForegroundColor DarkBlue "5. Invoke-RestMethod: $KeyVaultKeysAuthURI"
+Write-Host -BackgroundColor Yellow -ForegroundColor DarkBlue "Invoke-RestMethod: $KeyVaultKeysAuthURI"
 Write-Host
 try
 {
@@ -111,21 +114,9 @@ try
 }
 catch
 {
-    If ($null -eq $_.Exception.Response)
-    {
-        Write-Host -BackgroundColor Red -ForegroundColor White "Failed"
-        Write-Host
-        Break
-    }
-    Else
-    {   
-        Write-Host -BackgroundColor Red -ForegroundColor White "Failed"
-        Write-Host
-        Write-Host -BackgroundColor Red -ForegroundColor White "Status Code: $($_.Exception.Response.StatusCode.value__)"
-        Write-Host -BackgroundColor Red -ForegroundColor White "Status Description: $($_.Exception.Response.StatusDescription)"
-        Write-Host
-        Break
-    }
+    Write-Host -BackgroundColor Red -ForegroundColor White "$($_.Exception)"
+    Write-Host
+    Break
 }
 
 # Call Key Vault Keys Endpoint Authenticated
@@ -139,21 +130,9 @@ try
 }
 catch
 {
-    If ($null -eq $_.Exception.Response)
-    {
-        Write-Host -BackgroundColor Red -ForegroundColor White "Failed"
-        Write-Host
-        Break
-    }
-    Else
-    {   
-        Write-Host -BackgroundColor Red -ForegroundColor White "Failed"
-        Write-Host
-        Write-Host -BackgroundColor Red -ForegroundColor White "Status Code: $($_.Exception.Response.StatusCode.value__)"
-        Write-Host -BackgroundColor Red -ForegroundColor White "Status Description: $($_.Exception.Response.StatusDescription)"
-        Write-Host
-        Break
-    }
+    Write-Host -BackgroundColor Red -ForegroundColor White "$($_.Exception)"
+    Write-Host
+    Break
 }
 
 $KeyVaultKeys | FT
